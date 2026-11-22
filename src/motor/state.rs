@@ -25,6 +25,17 @@ pub enum MotorError {
     InvalidCoils,
 }
 
+impl Default for MotorState {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            status: None,
+            current_step: None,
+            coils: Some([false; 4]),
+        }
+    }
+}
+
 impl MotorState {
     pub fn new() -> Self {
         MotorState {
@@ -63,13 +74,17 @@ impl MotorState {
         self.coils = Some(coils);
     }
 
-    pub fn set_current_step(&mut self, current: usize) -> Result<(()), MotorError> {
+    pub fn set_current_step(&mut self, current: usize) -> Result<(), MotorError> {
         if current <= 7 {
             self.current_step = Some(current);
             Ok(())
         } else {
             Err(MotorError::InvalidCurrentStep)
         }
+    }
+
+    pub fn clear_mode(&mut self) {
+        self.mode = None;
     }
 }
 
