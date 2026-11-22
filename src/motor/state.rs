@@ -40,8 +40,8 @@ impl MotorState {
     pub fn new() -> Self {
         MotorState {
             mode: None,
-            status: None,
-            current_step: None,
+            status: Some(MotorStatus::Stopped),
+            current_step: Some(0),
             coils: Some([false; 4]),
         }
     }
@@ -86,6 +86,10 @@ impl MotorState {
     pub fn clear_mode(&mut self) {
         self.mode = None;
     }
+
+    pub fn is_initialized(&self) -> bool {
+        self.status.is_some() && self.current_step.is_some()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -109,6 +113,7 @@ pub enum ParserError {
     InvalidMessageLen,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct ResponseStatus {
     pub current_step: usize,
     pub coils: [bool; 4],
@@ -116,57 +121,66 @@ pub struct ResponseStatus {
 
 impl ResponseStatus {
     pub fn parse_response(message: &str) -> Result<ResponseStatus, ParserError> {
-        if message.len() != 7 {
+        let mut iter = message.split_whitespace();
+
+        let current_step = iter.next().ok_or(ParserError::MissingStep)?;
+
+        if current_step.len() != 2 || !current_step.starts_with('P') {
+            return Err(ParserError::InvalidPrefix);
+        }
+
+        let step_str = current_step
+            .strip_prefix('P')
+            .ok_or(ParserError::InvalidPrefix)?;
+
+        let step: usize = step_str.parse().map_err(|_| ParserError::InvalidStep)?;
+
+        if step > 7 {
+            return Err(ParserError::InvalidStep);
+        }
+
+        let valor = iter.next().ok_or(ParserError::MissingCoils)?;
+
+        if valor.len() != 4 {
+            return Err(ParserError::MissingCoils);
+        }
+
+        let mut coils = [false; 4];
+
+        for (index, coil) in valor.chars().enumerate() {
+            coils[index] = match coil {
+                '0' => false,
+                '1' => true,
+                _ => return Err(ParserError::InvalidCoils),
+            };
+        }
+
+        // No se permiten campos adicionales.
+        if iter.next().is_some() {
             return Err(ParserError::InvalidMessageLen);
         }
 
-        let mut iter = message.split_whitespace();
-
-        let step = {
-            let current_step = iter.next().ok_or(ParserError::MissingStep)?;
-
-            if (current_step.len() != 2) || (!current_step.starts_with('P')) {
-                return Err(ParserError::InvalidPrefix);
-            }
-
-            let step_str = current_step
-                .strip_prefix('P')
-                .ok_or(ParserError::InvalidPrefix)?;
-            let result: usize = step_str.parse().map_err(|_| ParserError::InvalidStep)?;
-            if result <= 7 {
-                result
-            } else {
-                return Err(ParserError::InvalidStep);
-            }
-        };
-
-        let coilst = {
-            let valor = {
-                let result = iter.next().ok_or(ParserError::MissingCoils)?;
-                if result.len() != 4 {
-                    return Err(ParserError::MissingCoils);
-                } else {
-                    result
-                }
-            };
-
-            let mut coils = [false; 4];
-
-            for (index, coil) in valor.chars().enumerate() {
-                coils[index] = match coil {
-                    '0' => false,
-                    '1' => true,
-                    _ => return Err(ParserError::InvalidCoils),
-                };
-            }
-
-            coils
-        };
-
         Ok(ResponseStatus {
             current_step: step,
-            coils: coilst,
+            coils,
         })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ArduinoMessage {
+    Step(ResponseStatus), // "P3 0110"
+    Done,                 // el giro terminó completo
+    Stopped,              // se detuvo con 'x'
+}
+
+impl ArduinoMessage {
+    pub fn parse(message: &str) -> Result<Self, ParserError> {
+        match message.trim() {
+            "DONE" => Ok(Self::Done),
+            "STOPPED" => Ok(Self::Stopped),
+            _ => ResponseStatus::parse_response(message).map(Self::Step),
+        }
     }
 }
 
@@ -200,5 +214,25 @@ mod test {
         let mut state = MotorState::new();
         assert_eq!(state.set_current_step(3), Ok(()));
         assert_eq!(state.current_step().unwrap(), 3);
+    }
+
+    #[test]
+    fn parses_arduino_lines() {
+        assert_eq!(ArduinoMessage::parse("DONE\r\n"), Ok(ArduinoMessage::Done));
+        assert_eq!(
+            ArduinoMessage::parse("STOPPED\n"),
+            Ok(ArduinoMessage::Stopped)
+        );
+        assert_eq!(
+            ArduinoMessage::parse("P3 0110\r\n"),
+            Ok(ArduinoMessage::Step(ResponseStatus {
+                current_step: 3,
+                coils: [false, true, true, false],
+            }))
+        );
+        assert_eq!(
+            ArduinoMessage::parse("DONE x"),
+            Err(ParserError::InvalidPrefix)
+        );
     }
 }

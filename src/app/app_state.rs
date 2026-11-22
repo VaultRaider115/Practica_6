@@ -1,22 +1,48 @@
-use tokio::sync::mpsc::{Receiver, Sender, channel, error::TryRecvError};
-use tokio::task::JoinHandle;
-
 use super::AppError;
-
+use crate::motor::{ArduinoMessage, ConsumptionAccumulator, CurrentMa, calc};
 use crate::{
     bluetooth::{BluetoothConnection, MotorCommand, MotorControl, MotorMode, MotorStatus},
-    motor::{MotorState, ResponseStatus},
+    motor::MotorState,
 };
+use std::{collections::VecDeque, time::Duration};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TryRecvError};
+use tokio::task::JoinHandle;
 
 pub struct App {
     command_tx: Sender<u8>,
     status_rx: Receiver<Vec<u8>>,
     tasks: Task,
     state: MotorState,
+    consumption: ConsumptionAccumulator,
+    current_history: VecDeque<CurrentMa>,
 }
 
 pub struct Task {
     pub tasks: Vec<JoinHandle<Result<(), AppError>>>,
+}
+
+/// Saca de `buf` los mensajes completos del Arduino ("P3 0110", "DONE", "STOPPED").
+/// Se reconocen por su forma, no por el salto de línea.
+fn take_messages(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let skip = buf.iter().take_while(|b| b.is_ascii_whitespace()).count();
+        buf.drain(..skip);
+        let len = match buf.first() {
+            None => break,
+            Some(b'P') | Some(b'S') => 7, // "P3 0110" / "STOPPED"
+            Some(b'D') => 4,              // "DONE"
+            Some(_) => {
+                buf.remove(0); // basura: descarta y resincroniza
+                continue;
+            }
+        };
+        if buf.len() < len {
+            break;
+        }
+        out.push(buf.drain(..len).collect());
+    }
+    out
 }
 
 impl App {
@@ -26,6 +52,8 @@ impl App {
             status_rx: receiver,
             tasks: task,
             state: MotorState::new(),
+            consumption: ConsumptionAccumulator::new(),
+            current_history: VecDeque::with_capacity(15),
         }
     }
 
@@ -45,9 +73,12 @@ impl App {
         });
 
         let task_2 = tokio::spawn(async move {
+            let mut buf = Vec::new();
             loop {
-                let data = reader.receive_message().await?;
-                status_tx.send(data).await?
+                buf.extend(reader.receive_message().await?);
+                for msg in take_messages(&mut buf) {
+                    status_tx.send(msg).await?;
+                }
             }
         });
 
@@ -87,16 +118,27 @@ impl App {
     }
 
     pub fn receive_status(&mut self) -> Result<(), AppError> {
-        match self.status_rx.try_recv() {
-            Ok(data) => {
-                let message = String::from_utf8(data)?;
-                let parser = ResponseStatus::parse_response(&message)?;
-                self.state.set_current_step(parser.current_step)?;
-                self.state.set_coils(parser.coils);
-                Ok(())
+        loop {
+            match self.status_rx.try_recv() {
+                Ok(data) => {
+                    let message = String::from_utf8(data)?;
+                    match ArduinoMessage::parse(&message)? {
+                        ArduinoMessage::Step(status) => {
+                            self.state.set_current_step(status.current_step)?;
+                            self.state.set_coils(status.coils);
+                        }
+                        ArduinoMessage::Done | ArduinoMessage::Stopped => {
+                            self.state.set_coils([false; 4]);
+                            self.state.clear_mode();
+                            self.state.set_status(MotorStatus::Stopped);
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => return Ok(()),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(AppError::Recv(TryRecvError::Disconnected));
+                }
             }
-            Err(TryRecvError::Empty) => Ok(()),
-            Err(TryRecvError::Disconnected) => Err(AppError::Recv(TryRecvError::Disconnected)),
         }
     }
 
@@ -117,6 +159,41 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub fn accumulator(&self) -> &ConsumptionAccumulator {
+        &self.consumption
+    }
+
+    pub fn current(&self) -> Result<CurrentMa, AppError> {
+        match self.state.status()? {
+            MotorStatus::Active => Ok(calc(
+                self.state.mode()?,
+                self.state.status()?,
+                self.state.current_step()?,
+            )),
+            MotorStatus::Stopped => Ok(0),
+        }
+    }
+
+    pub fn update_consumption(&mut self, elapsed: Duration) -> Result<(), AppError> {
+        let data = self.current()?;
+        self.consumption.accumulate(data, elapsed)?;
+
+        if self.current_history.len() >= 15 {
+            self.current_history.pop_front();
+        }
+
+        self.current_history.push_back(data);
+        Ok(())
+    }
+
+    pub fn current_history(&self) -> &VecDeque<CurrentMa> {
+        &self.current_history
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.state.is_initialized()
     }
 }
 
@@ -228,5 +305,47 @@ mod tests {
         let app = App::new(command_tx, status_rx, Task { tasks: vec![task] });
 
         assert!(app.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_receive_done_stops_motor() {
+        let (mut app, mut command_rx, status_tx) = create_app();
+        app.send_command(MotorCommand::SimpleLeft).await.unwrap();
+        command_rx.recv().await;
+
+        status_tx.send(b"DONE\r\n".to_vec()).await.unwrap();
+        app.receive_status().unwrap();
+
+        assert_eq!(format!("{:?}", app.state().status().unwrap()), "Stopped");
+        assert!(app.state().mode().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_status_drains_queue() {
+        let (mut app, _, status_tx) = create_app();
+        status_tx.send(b"P1 1100".to_vec()).await.unwrap();
+        status_tx.send(b"P2 0110".to_vec()).await.unwrap();
+
+        app.receive_status().unwrap();
+
+        assert_eq!(format!("{:?}", app.state().current_step().unwrap()), "2");
+    }
+
+    #[test]
+    fn take_messages_split_reads_and_no_newlines() {
+        let mut buf = b"P3 01".to_vec();
+        assert!(take_messages(&mut buf).is_empty());
+
+        buf.extend(b"10\r\nP4 1100\r\nDO");
+        assert_eq!(
+            take_messages(&mut buf),
+            vec![b"P3 0110".to_vec(), b"P4 1100".to_vec()]
+        );
+
+        buf.extend(b"NE");
+        assert_eq!(take_messages(&mut buf), vec![b"DONE".to_vec()]);
+
+        let mut buf = b"3 0110\r\nP4 1100".to_vec(); // arranca a mitad de mensaje
+        assert_eq!(take_messages(&mut buf), vec![b"P4 1100".to_vec()]);
     }
 }
