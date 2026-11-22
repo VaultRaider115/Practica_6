@@ -62,8 +62,10 @@ async fn main() -> Result<(), Error> {
                     _ = timer.tick() => {
                         let elapsed = last_update.elapsed();
                         app.receive_status()?;
-                        app.update_consumption(elapsed)?;
-                        tui.draw(app.state())?;
+                        if app.is_initialized() {
+                            app.update_consumption(elapsed)?;
+                        }
+                        tui.draw(&app)?;
                         last_update = Instant::now();
                         Ok(())
                     }

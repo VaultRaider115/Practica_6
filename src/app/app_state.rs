@@ -1,8 +1,8 @@
 use super::AppError;
-use crate::motor::{ConsumptionAccumulator, CurrentMa, calc};
+use crate::motor::{ArduinoMessage, ConsumptionAccumulator, CurrentMa, calc};
 use crate::{
     bluetooth::{BluetoothConnection, MotorCommand, MotorControl, MotorMode, MotorStatus},
-    motor::{MotorState, ResponseStatus},
+    motor::MotorState,
 };
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TryRecvError};
@@ -89,16 +89,27 @@ impl App {
     }
 
     pub fn receive_status(&mut self) -> Result<(), AppError> {
-        match self.status_rx.try_recv() {
-            Ok(data) => {
-                let message = String::from_utf8(data)?;
-                let parser = ResponseStatus::parse_response(&message)?;
-                self.state.set_current_step(parser.current_step)?;
-                self.state.set_coils(parser.coils);
-                Ok(())
+        loop {
+            match self.status_rx.try_recv() {
+                Ok(data) => {
+                    let message = String::from_utf8(data)?;
+                    match ArduinoMessage::parse(&message)? {
+                        ArduinoMessage::Step(status) => {
+                            self.state.set_current_step(status.current_step)?;
+                            self.state.set_coils(status.coils);
+                        }
+                        ArduinoMessage::Done | ArduinoMessage::Stopped => {
+                            self.state.set_coils([false; 4]);
+                            self.state.clear_mode();
+                            self.state.set_status(MotorStatus::Stopped);
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => return Ok(()),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(AppError::Recv(TryRecvError::Disconnected));
+                }
             }
-            Err(TryRecvError::Empty) => Ok(()),
-            Err(TryRecvError::Disconnected) => Err(AppError::Recv(TryRecvError::Disconnected)),
         }
     }
 
@@ -136,6 +147,10 @@ impl App {
     pub fn update_consumption(&mut self, elapsed: Duration) -> Result<(), AppError> {
         self.consumption.accumulate(self.current()?, elapsed)?;
         Ok(())
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.state.is_initialized()
     }
 }
 
@@ -247,5 +262,29 @@ mod tests {
         let app = App::new(command_tx, status_rx, Task { tasks: vec![task] });
 
         assert!(app.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_receive_done_stops_motor() {
+        let (mut app, mut command_rx, status_tx) = create_app();
+        app.send_command(MotorCommand::SimpleLeft).await.unwrap();
+        command_rx.recv().await;
+
+        status_tx.send(b"DONE\r\n".to_vec()).await.unwrap();
+        app.receive_status().unwrap();
+
+        assert_eq!(format!("{:?}", app.state().status().unwrap()), "Stopped");
+        assert!(app.state().mode().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_status_drains_queue() {
+        let (mut app, _, status_tx) = create_app();
+        status_tx.send(b"P1 1100".to_vec()).await.unwrap();
+        status_tx.send(b"P2 0110".to_vec()).await.unwrap();
+
+        app.receive_status().unwrap();
+
+        assert_eq!(format!("{:?}", app.state().current_step().unwrap()), "2");
     }
 }

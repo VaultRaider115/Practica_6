@@ -1,7 +1,10 @@
 use crossterm::{
     cursor::{Hide, Show},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::{
     Frame, Terminal,
@@ -14,11 +17,11 @@ use ratatui::{
     },
 };
 use std::f64::consts::TAU;
-use std::io::{Error, Stdout, stdout};
+use std::io::{Stdout, stdout};
 
 use crate::{
-    app::AppError,
-    motor::{MotorState, calc},
+    app::{App, AppError},
+    motor::{CurrentMa, MotorState},
 };
 
 pub struct Tui {
@@ -26,25 +29,31 @@ pub struct Tui {
 }
 
 impl Tui {
-    pub fn new() -> Result<Self, std::io::Error> {
+    pub fn new() -> Result<Self, AppError> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
     }
 
-    pub fn init(&self) -> Result<(), Error> {
+    pub fn init(&self) -> Result<(), AppError> {
         enable_raw_mode()?;
-        execute!(stdout(), EnterAlternateScreen, Hide)?;
+        execute!(stdout(), EnterAlternateScreen, Hide, Clear(ClearType::All))?;
         Ok(())
     }
 
-    pub fn restore(&self) -> Result<(), Error> {
+    pub fn restore(&self) -> Result<(), AppError> {
         disable_raw_mode()?;
         execute!(stdout(), LeaveAlternateScreen, Show)?;
         Ok(())
     }
 
-    pub fn draw(&mut self, state: &MotorState) -> Result<(), Error> {
+    pub fn draw(&mut self, app: &App) -> Result<(), AppError> {
+        let current = if app.is_initialized() {
+            Some(app.current()?)
+        } else {
+            None
+        };
+
         self.terminal.draw(|frame| {
             // Vertical split: left 70% | right 30%
             let [left, right] =
@@ -56,9 +65,9 @@ impl Tui {
                 Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .areas(right);
 
-            Self::draw_left(frame, left, state);
-            Self::draw_top_right(frame, top_right, state);
-            Self::draw_bottom_right(frame, bottom_right, state);
+            Self::draw_left(frame, left, app.state());
+            Self::draw_top_right(frame, top_right, current);
+            Self::draw_bottom_right(frame, bottom_right, app.state());
         })?;
         Ok(())
     }
@@ -117,40 +126,21 @@ impl Tui {
     }
 
     /// Region 2: top right.
-    fn draw_top_right(frame: &mut Frame, area: Rect, state: &MotorState) -> Result<(), AppError> {
+    fn draw_top_right(frame: &mut Frame, area: Rect, current: Option<CurrentMa>) {
         let block = Block::default().title("Consumo").borders(Borders::ALL);
 
         let inner = block.inner(area);
         frame.render_widget(&block, area);
 
-        match (state.mode(), state.status(), state.current_step()) {
-            (Ok(mode), Ok(status), Ok(current_step)) => {
-                let current = calc(mode, status, current_step);
-
-                let data = [(0.0, current as f64)];
-
-                let dataset = Dataset::default()
-                    .name("Consumo")
-                    .data(&data)
-                    .graph_type(GraphType::Line);
-                let chart = Chart::new(vec![dataset]).block(block.clone());
-                let x_axis = Axis::default().title("Tiempo").bounds([0.0, 4.0]);
-                let y_axis = Axis::default().title("Consumo").bounds([0.0, 250.0]);
-                let chart = chart.x_axis(x_axis).y_axis(y_axis);
-                frame.render_widget(chart, area);
-                Ok(())
+        match current {
+            Some(result) => {
+                let paragraph =
+                    Paragraph::new(format!("{} mA", result)).alignment(Alignment::Center);
+                frame.render_widget(paragraph, inner);
             }
-            _ => {
-                let [_, middle, _] = Layout::vertical([
-                    Constraint::Fill(1),
-                    Constraint::Length("Esperando datos...".len() as u16),
-                    Constraint::Fill(1),
-                ])
-                .flex(Flex::Center)
-                .areas(inner);
+            None => {
                 let paragraph = Paragraph::new("Esperando datos...").alignment(Alignment::Center);
-                frame.render_widget(paragraph, middle);
-                Ok(())
+                frame.render_widget(paragraph, inner);
             }
         }
     }
