@@ -20,6 +20,30 @@ pub struct Task {
     pub tasks: Vec<JoinHandle<Result<(), AppError>>>,
 }
 
+/// Saca de `buf` los mensajes completos del Arduino ("P3 0110", "DONE", "STOPPED").
+/// Se reconocen por su forma, no por el salto de línea.
+fn take_messages(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let skip = buf.iter().take_while(|b| b.is_ascii_whitespace()).count();
+        buf.drain(..skip);
+        let len = match buf.first() {
+            None => break,
+            Some(b'P') | Some(b'S') => 7, // "P3 0110" / "STOPPED"
+            Some(b'D') => 4,              // "DONE"
+            Some(_) => {
+                buf.remove(0); // basura: descarta y resincroniza
+                continue;
+            }
+        };
+        if buf.len() < len {
+            break;
+        }
+        out.push(buf.drain(..len).collect());
+    }
+    out
+}
+
 impl App {
     pub fn new(sender: Sender<u8>, receiver: Receiver<Vec<u8>>, task: Task) -> Self {
         Self {
@@ -47,9 +71,12 @@ impl App {
         });
 
         let task_2 = tokio::spawn(async move {
+            let mut buf = Vec::new();
             loop {
-                let data = reader.receive_message().await?;
-                status_tx.send(data).await?
+                buf.extend(reader.receive_message().await?);
+                for msg in take_messages(&mut buf) {
+                    status_tx.send(msg).await?;
+                }
             }
         });
 
@@ -286,5 +313,23 @@ mod tests {
         app.receive_status().unwrap();
 
         assert_eq!(format!("{:?}", app.state().current_step().unwrap()), "2");
+    }
+
+    #[test]
+    fn take_messages_split_reads_and_no_newlines() {
+        let mut buf = b"P3 01".to_vec();
+        assert!(take_messages(&mut buf).is_empty());
+
+        buf.extend(b"10\r\nP4 1100\r\nDO");
+        assert_eq!(
+            take_messages(&mut buf),
+            vec![b"P3 0110".to_vec(), b"P4 1100".to_vec()]
+        );
+
+        buf.extend(b"NE");
+        assert_eq!(take_messages(&mut buf), vec![b"DONE".to_vec()]);
+
+        let mut buf = b"3 0110\r\nP4 1100".to_vec(); // arranca a mitad de mensaje
+        assert_eq!(take_messages(&mut buf), vec![b"P4 1100".to_vec()]);
     }
 }
