@@ -40,8 +40,8 @@ impl MotorState {
     pub fn new() -> Self {
         MotorState {
             mode: None,
-            status: None,
-            current_step: None,
+            status: Some(MotorStatus::Stopped),
+            current_step: Some(0),
             coils: Some([false; 4]),
         }
     }
@@ -88,7 +88,7 @@ impl MotorState {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.mode.is_some() && self.status.is_some() && self.current_step.is_some()
+        self.status.is_some() && self.current_step.is_some()
     }
 }
 

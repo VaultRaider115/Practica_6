@@ -9,15 +9,18 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::Color,
     widgets::{
         Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph,
         canvas::{Canvas, Circle, Line},
     },
 };
-use std::f64::consts::TAU;
-use std::io::{Stdout, stdout};
+use std::{collections::VecDeque, f64::consts::TAU};
+use std::{
+    f32::consts::FRAC_PI_2,
+    io::{Stdout, stdout},
+};
 
 use crate::{
     app::{App, AppError},
@@ -48,12 +51,6 @@ impl Tui {
     }
 
     pub fn draw(&mut self, app: &App) -> Result<(), AppError> {
-        let current = if app.is_initialized() {
-            Some(app.current()?)
-        } else {
-            None
-        };
-
         self.terminal.draw(|frame| {
             // Vertical split: left 70% | right 30%
             let [left, right] =
@@ -66,14 +63,14 @@ impl Tui {
                     .areas(right);
 
             Self::draw_left(frame, left, app.state());
-            Self::draw_top_right(frame, top_right, current);
+            Self::draw_top_right(frame, top_right, app.current_history());
             Self::draw_bottom_right(frame, bottom_right, app.state());
         })?;
         Ok(())
     }
 
     /// Region 1: circle with 8 sticks outside + center ball with a stick.
-    fn draw_left(frame: &mut Frame, area: Rect, _state: &MotorState) {
+    fn draw_left(frame: &mut Frame, area: Rect, state: &MotorState) {
         let block = Block::default().title("Practica_6").borders(Borders::ALL);
         let inner = block.inner(area);
 
@@ -81,6 +78,9 @@ impl Tui {
         let w = inner.width as f64 * 2.0;
         let h = inner.height as f64 * 4.0;
         let r = w.min(h) / 2.0 * 0.6;
+
+        let current_step = state.current_step().unwrap_or(0);
+        let angle = (TAU * current_step as f64) / 8.0;
 
         let canvas = Canvas::default()
             .block(block)
@@ -113,11 +113,16 @@ impl Tui {
                     radius: r * 0.12,
                     color: Color::Yellow,
                 });
+
+                let needle_length = r * 0.8;
+                let x = needle_length * (angle + FRAC_PI_2 as f64).cos();
+                let y = needle_length * (angle + FRAC_PI_2 as f64).sin();
+
                 ctx.draw(&Line {
                     x1: 0.0,
                     y1: r * 0.12,
-                    x2: 0.0,
-                    y2: r * 0.8,
+                    x2: x,
+                    y2: y,
                     color: Color::Yellow,
                 });
             });
@@ -126,22 +131,42 @@ impl Tui {
     }
 
     /// Region 2: top right.
-    fn draw_top_right(frame: &mut Frame, area: Rect, current: Option<CurrentMa>) {
+    fn draw_top_right(frame: &mut Frame, area: Rect, history: &VecDeque<CurrentMa>) {
         let block = Block::default().title("Consumo").borders(Borders::ALL);
 
         let inner = block.inner(area);
         frame.render_widget(&block, area);
 
-        match current {
-            Some(result) => {
-                let paragraph =
-                    Paragraph::new(format!("{} mA", result)).alignment(Alignment::Center);
-                frame.render_widget(paragraph, inner);
-            }
-            None => {
-                let paragraph = Paragraph::new("Esperando datos...").alignment(Alignment::Center);
-                frame.render_widget(paragraph, inner);
-            }
+        if history.is_empty() {
+            let paragraph = Paragraph::new("Esperando datos...").alignment(Alignment::Center);
+            frame.render_widget(paragraph, inner);
+        } else {
+            let data: Vec<(f64, f64)> = history
+                .iter()
+                .enumerate()
+                .map(|(index, current)| (index as f64, *current as f64))
+                .collect();
+
+            let dataset = Dataset::default()
+                .name("Corriente")
+                .data(&data)
+                .graph_type(GraphType::Line);
+
+            let x_axis = Axis::default()
+                .title("Muestras")
+                .style(Color::White)
+                .bounds([0.0, 14.0])
+                .labels(["0", "7", "14"]);
+
+            let y_axis = Axis::default()
+                .title("mA")
+                .style(Color::White)
+                .bounds([0.0, 250.0])
+                .labels(["0", "100", "250"]);
+
+            let chart = Chart::new(vec![dataset]).x_axis(x_axis).y_axis(y_axis);
+
+            frame.render_widget(chart, inner);
         }
     }
 

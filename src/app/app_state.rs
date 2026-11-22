@@ -4,7 +4,7 @@ use crate::{
     bluetooth::{BluetoothConnection, MotorCommand, MotorControl, MotorMode, MotorStatus},
     motor::MotorState,
 };
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 use tokio::sync::mpsc::{Receiver, Sender, channel, error::TryRecvError};
 use tokio::task::JoinHandle;
 
@@ -14,6 +14,7 @@ pub struct App {
     tasks: Task,
     state: MotorState,
     consumption: ConsumptionAccumulator,
+    current_history: VecDeque<CurrentMa>,
 }
 
 pub struct Task {
@@ -52,6 +53,7 @@ impl App {
             tasks: task,
             state: MotorState::new(),
             consumption: ConsumptionAccumulator::new(),
+            current_history: VecDeque::with_capacity(15),
         }
     }
 
@@ -164,16 +166,30 @@ impl App {
     }
 
     pub fn current(&self) -> Result<CurrentMa, AppError> {
-        Ok(calc(
-            self.state.mode()?,
-            self.state.status()?,
-            self.state.current_step()?,
-        ))
+        match self.state.status()? {
+            MotorStatus::Active => Ok(calc(
+                self.state.mode()?,
+                self.state.status()?,
+                self.state.current_step()?,
+            )),
+            MotorStatus::Stopped => Ok(0),
+        }
     }
 
     pub fn update_consumption(&mut self, elapsed: Duration) -> Result<(), AppError> {
-        self.consumption.accumulate(self.current()?, elapsed)?;
+        let data = self.current()?;
+        self.consumption.accumulate(data, elapsed)?;
+
+        if self.current_history.len() >= 15 {
+            self.current_history.pop_front();
+        }
+
+        self.current_history.push_back(data);
         Ok(())
+    }
+
+    pub fn current_history(&self) -> &VecDeque<CurrentMa> {
+        &self.current_history
     }
 
     pub fn is_initialized(&self) -> bool {
