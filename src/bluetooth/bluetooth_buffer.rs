@@ -1,3 +1,4 @@
+#[derive(Default)]
 pub struct MessageBuffer {
     bytes: Vec<u8>,
 }

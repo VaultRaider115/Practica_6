@@ -1,14 +1,13 @@
-mod app;
-mod bluetooth;
-mod cli;
-mod motor;
-
-use crate::bluetooth::{Adaptador, BluetoothConnection};
-use crate::cli::{Command, Param};
 use bluer::{
     Address, InvalidAddress,
     rfcomm::{SocketAddr, Stream},
 };
+
+use practica_5::{
+    bluetooth::Adaptador,
+    cli::{Command, Param},
+};
+
 use clap::Parser;
 use std::str::FromStr;
 

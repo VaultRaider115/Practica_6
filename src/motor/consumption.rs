@@ -4,6 +4,7 @@ use std::{num::TryFromIntError, time::Duration};
 pub type CurrentMa = u16;
 pub type ConsumptionUah = u64;
 
+#[derive(Default)]
 pub struct ConsumptionAccumulator {
     total: ConsumptionUah,
     remainder: u128,
@@ -19,15 +20,6 @@ pub enum ConsumptionError {
 
     #[error("Error al convertir")]
     ConverError(#[from] TryFromIntError),
-}
-
-impl Default for ConsumptionAccumulator {
-    fn default() -> Self {
-        Self {
-            total: 0,
-            remainder: 0,
-        }
-    }
 }
 
 impl ConsumptionAccumulator {

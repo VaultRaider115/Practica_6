@@ -9,21 +9,16 @@ pub struct BluetoothConnection {
     buffer: MessageBuffer,
 }
 
-impl BluetoothConnection {
-    pub fn new(stream: Stream) -> Self {
-        let (rxs, txs) = tokio::io::split(stream);
-        Self {
-            rx: rxs,
-            tx: txs,
-            buffer: MessageBuffer::new(),
-        }
-    }
+pub struct BluetoothReader {
+    rx: ReadHalf<Stream>,
+    buffer: MessageBuffer,
+}
 
-    pub async fn send(&mut self, message: u8) -> Result<(), Error> {
-        self.tx.write_all(&[message]).await?;
-        Ok(())
-    }
+pub struct BluetoothWriter {
+    tx: WriteHalf<Stream>,
+}
 
+impl BluetoothReader {
     async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
         self.rx.read(buffer).await
     }
@@ -47,5 +42,28 @@ impl BluetoothConnection {
 
             self.buffer.append(&buf[..cantidad]);
         }
+    }
+}
+
+impl BluetoothWriter {
+    pub async fn send(&mut self, message: u8) -> Result<(), Error> {
+        self.tx.write_all(&[message]).await?;
+        Ok(())
+    }
+}
+
+impl BluetoothConnection {
+    pub fn new(stream: Stream) -> Self {
+        let (rxs, txs) = tokio::io::split(stream);
+        Self {
+            rx: rxs,
+            tx: txs,
+            buffer: MessageBuffer::new(),
+        }
+    }
+
+    pub fn into_parts(self) -> (BluetoothReader, BluetoothWriter) {
+        let BluetoothConnection { rx, tx, buffer } = self;
+        (BluetoothReader { rx, buffer }, BluetoothWriter { tx })
     }
 }
