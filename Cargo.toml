@@ -1,0 +1,13 @@
+[package]
+name = "practica_5"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bluer = { version = "0.17.4", features = ["bluetoothd", "rfcomm"] }
+clap = {version = "4.6.7", features = ["derive"]}
+crossterm = "0.29.0"
+futures = "0.3.34"
+ratatui = "0.30.2"
+thiserror = "2.0.21"
+tokio = {version = "1.54.1", features = ["full"]}
