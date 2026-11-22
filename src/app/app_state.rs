@@ -119,3 +119,114 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    fn create_app() -> (App, Receiver<u8>, Sender<Vec<u8>>) {
+        let (command_tx, command_rx) = mpsc::channel::<u8>(32);
+        let (status_tx, status_rx) = mpsc::channel::<Vec<u8>>(32);
+
+        let task = Task { tasks: Vec::new() };
+
+        let app = App::new(command_tx, status_rx, task);
+
+        (app, command_rx, status_tx)
+    }
+
+    #[tokio::test]
+    async fn test_send_command() {
+        let (mut app, mut command_rx, _) = create_app();
+
+        app.send_command(MotorCommand::SimpleLeft).await.unwrap();
+
+        assert_eq!(command_rx.recv().await, Some(b'a'));
+        assert_eq!(format!("{:?}", app.state().mode().unwrap()), "Simple");
+        assert_eq!(format!("{:?}", app.state().status().unwrap()), "Active");
+    }
+
+    #[tokio::test]
+    async fn test_stop_motor() {
+        let (mut app, mut command_rx, _) = create_app();
+
+        app.send_command(MotorCommand::SimpleLeft).await.unwrap();
+
+        command_rx.recv().await;
+
+        app.stop_motor(MotorControl::Stop).await.unwrap();
+
+        assert_eq!(command_rx.recv().await, Some(b'x'));
+        assert!(app.state().mode().is_err());
+
+        assert_eq!(format!("{:?}", app.state().status().unwrap()), "Stopped");
+    }
+
+    #[tokio::test]
+    async fn test_send_command_disconnected() {
+        let (mut app, command_rx, _) = create_app();
+
+        drop(command_rx);
+
+        assert!(app.send_command(MotorCommand::SimpleLeft).await.is_err());
+
+        assert!(app.state().mode().is_err());
+        assert!(app.state().status().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_status() {
+        let (mut app, _, status_tx) = create_app();
+
+        status_tx.send(b"P3 0110".to_vec()).await.unwrap();
+
+        app.receive_status().unwrap();
+
+        assert_eq!(format!("{:?}", app.state().current_step().unwrap()), "3");
+        assert_eq!(
+            format!("{:?}", app.state().coils().unwrap()),
+            "[false, true, true, false]"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_receive_status_invalid_message() {
+        let (mut app, _, status_tx) = create_app();
+
+        status_tx.send(b"INVALID".to_vec()).await.unwrap();
+
+        assert!(app.receive_status().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_status_empty() {
+        let (mut app, _, _status_tx) = create_app();
+
+        assert!(app.receive_status().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_receive_status_disconnected() {
+        let (mut app, _, status_tx) = create_app();
+
+        drop(status_tx);
+
+        assert!(app.receive_status().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown() {
+        let (command_tx, status_rx) = {
+            let (tx, _) = mpsc::channel::<u8>(32);
+            let (_, rx) = mpsc::channel::<Vec<u8>>(32);
+            (tx, rx)
+        };
+
+        let task = tokio::spawn(async { std::future::pending::<Result<(), AppError>>().await });
+
+        let app = App::new(command_tx, status_rx, Task { tasks: vec![task] });
+
+        assert!(app.shutdown().await.is_ok());
+    }
+}
