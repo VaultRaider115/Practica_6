@@ -86,6 +86,10 @@ impl MotorState {
     pub fn clear_mode(&mut self) {
         self.mode = None;
     }
+
+    pub fn is_initialized(&self) -> bool {
+        self.mode.is_some() && self.status.is_some() && self.current_step.is_some()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

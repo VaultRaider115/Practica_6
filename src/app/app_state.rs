@@ -1,18 +1,19 @@
-use tokio::sync::mpsc::{Receiver, Sender, channel, error::TryRecvError};
-use tokio::task::JoinHandle;
-
 use super::AppError;
-
+use crate::motor::{ConsumptionAccumulator, CurrentMa, calc};
 use crate::{
     bluetooth::{BluetoothConnection, MotorCommand, MotorControl, MotorMode, MotorStatus},
     motor::{MotorState, ResponseStatus},
 };
+use std::time::Duration;
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TryRecvError};
+use tokio::task::JoinHandle;
 
 pub struct App {
     command_tx: Sender<u8>,
     status_rx: Receiver<Vec<u8>>,
     tasks: Task,
     state: MotorState,
+    consumption: ConsumptionAccumulator,
 }
 
 pub struct Task {
@@ -26,6 +27,7 @@ impl App {
             status_rx: receiver,
             tasks: task,
             state: MotorState::new(),
+            consumption: ConsumptionAccumulator::new(),
         }
     }
 
@@ -116,6 +118,23 @@ impl App {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn accumulator(&self) -> &ConsumptionAccumulator {
+        &self.consumption
+    }
+
+    pub fn current(&self) -> Result<CurrentMa, AppError> {
+        Ok(calc(
+            self.state.mode()?,
+            self.state.status()?,
+            self.state.current_step()?,
+        ))
+    }
+
+    pub fn update_consumption(&mut self, elapsed: Duration) -> Result<(), AppError> {
+        self.consumption.accumulate(self.current()?, elapsed)?;
         Ok(())
     }
 }

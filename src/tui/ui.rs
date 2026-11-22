@@ -6,17 +6,20 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::Color,
     widgets::{
-        Block, Borders,
+        Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph,
         canvas::{Canvas, Circle, Line},
     },
 };
 use std::f64::consts::TAU;
 use std::io::{Error, Stdout, stdout};
 
-use crate::motor::MotorState;
+use crate::{
+    app::AppError,
+    motor::{MotorState, calc},
+};
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -114,9 +117,42 @@ impl Tui {
     }
 
     /// Region 2: top right.
-    fn draw_top_right(frame: &mut Frame, area: Rect, _state: &MotorState) {
-        let block = Block::default().title("Region 2").borders(Borders::ALL);
-        frame.render_widget(block, area);
+    fn draw_top_right(frame: &mut Frame, area: Rect, state: &MotorState) -> Result<(), AppError> {
+        let block = Block::default().title("Consumo").borders(Borders::ALL);
+
+        let inner = block.inner(area);
+        frame.render_widget(&block, area);
+
+        match (state.mode(), state.status(), state.current_step()) {
+            (Ok(mode), Ok(status), Ok(current_step)) => {
+                let current = calc(mode, status, current_step);
+
+                let data = [(0.0, current as f64)];
+
+                let dataset = Dataset::default()
+                    .name("Consumo")
+                    .data(&data)
+                    .graph_type(GraphType::Line);
+                let chart = Chart::new(vec![dataset]).block(block.clone());
+                let x_axis = Axis::default().title("Tiempo").bounds([0.0, 4.0]);
+                let y_axis = Axis::default().title("Consumo").bounds([0.0, 250.0]);
+                let chart = chart.x_axis(x_axis).y_axis(y_axis);
+                frame.render_widget(chart, area);
+                Ok(())
+            }
+            _ => {
+                let [_, middle, _] = Layout::vertical([
+                    Constraint::Fill(1),
+                    Constraint::Length("Esperando datos...".len() as u16),
+                    Constraint::Fill(1),
+                ])
+                .flex(Flex::Center)
+                .areas(inner);
+                let paragraph = Paragraph::new("Esperando datos...").alignment(Alignment::Center);
+                frame.render_widget(paragraph, middle);
+                Ok(())
+            }
+        }
     }
 
     /// Region 3: bottom right.
