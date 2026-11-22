@@ -4,8 +4,10 @@ use bluer::{
 };
 
 use practica_5::{
-    bluetooth::Adaptador,
+    app::*,
+    bluetooth::{Adaptador, BluetoothConnection},
     cli::{Command, Param},
+    tui::Tui,
 };
 
 use clap::Parser;
@@ -21,6 +23,9 @@ pub enum Error {
 
     #[error("Error de entrada/salida")]
     Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    App(#[from] AppError),
 }
 
 #[tokio::main]
@@ -33,7 +38,16 @@ async fn main() -> Result<(), Error> {
         }
         Command::Connect { mac } => {
             let address = Address::from_str(&mac)?;
-            let connectio = Stream::connect(SocketAddr::new(address, 1)).await?;
+            let (tx, rx, task) = App::initialize_bluetooth(BluetoothConnection::new(
+                Stream::connect(SocketAddr::new(address, 1)).await?,
+            ));
+            let mut app = App::new(tx, rx, task);
+            let mut tui = Tui::new()?;
+            tui.init()?;
+            loop {
+                app.receive_status()?;
+                tui.draw(app.state())?;
+            }
         }
     }
     Ok(())
