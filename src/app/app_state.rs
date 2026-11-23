@@ -15,6 +15,7 @@ pub struct App {
     state: MotorState,
     consumption: ConsumptionAccumulator,
     current_history: VecDeque<CurrentMa>,
+    angle: AngleTracker,
 }
 
 pub struct Task {
@@ -54,6 +55,7 @@ impl App {
             state: MotorState::new(),
             consumption: ConsumptionAccumulator::new(),
             current_history: VecDeque::with_capacity(15),
+            angle: AngleTracker::default(),
         }
     }
 
@@ -125,6 +127,7 @@ impl App {
                     match ArduinoMessage::parse(&message)? {
                         ArduinoMessage::Step(status) => {
                             self.state.set_current_step(status.current_step)?;
+                            self.angle.update(status.current_step);
                             self.state.set_coils(status.coils);
                         }
                         ArduinoMessage::Done | ArduinoMessage::Stopped => {
@@ -195,6 +198,30 @@ impl App {
     pub fn is_initialized(&self) -> bool {
         self.state.is_initialized()
     }
+
+    pub fn angle_degrees(&self) -> f64 {
+        self.angle.degrees()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AngleTracker {
+    last_step: Option<usize>,
+    half_steps: i64,
+}
+
+impl AngleTracker {
+    pub fn update(&mut self, step: usize) {
+        if let Some(last) = self.last_step {
+            let d = (step + 8 - last) % 8;
+            self.half_steps += if d <= 4 { d as i64 } else { d as i64 - 8 };
+        }
+        self.last_step = Some(step);
+    }
+
+    pub fn degrees(&self) -> f64 {
+        self.half_steps as f64 * 360.0 / 4096.0
+    }
 }
 
 #[cfg(test)]
@@ -249,7 +276,7 @@ mod tests {
         assert!(app.send_command(MotorCommand::SimpleLeft).await.is_err());
 
         assert!(app.state().mode().is_err());
-        assert!(app.state().status().is_err());
+        assert!(matches!(app.state().status(), Ok(MotorStatus::Stopped))); // el envío falló: sigue en el valor inicial
     }
 
     #[tokio::test]
@@ -347,5 +374,47 @@ mod tests {
 
         let mut buf = b"3 0110\r\nP4 1100".to_vec(); // arranca a mitad de mensaje
         assert_eq!(take_messages(&mut buf), vec![b"P4 1100".to_vec()]);
+    }
+
+    #[test]
+    fn angle_quarter_turn_right_simple_mode() {
+        let mut a = AngleTracker::default();
+        a.update(0); // la primera línea solo fija la referencia
+        for i in 1..=512 {
+            a.update((i * 2) % 8);
+        }
+        assert_eq!(a.degrees(), 90.0);
+    }
+
+    #[test]
+    fn angle_left_goes_negative() {
+        let mut a = AngleTracker::default();
+        a.update(0);
+        a.update(7);
+        a.update(6);
+        assert_eq!(a.degrees(), -2.0 * 360.0 / 4096.0);
+    }
+
+    #[test]
+    fn angle_alignment_jump_counts() {
+        let mut a = AngleTracker::default();
+        a.update(1);
+        a.update(4); // alinea (+1) y avanza 2
+        assert_eq!(a.degrees(), 3.0 * 360.0 / 4096.0);
+
+        let mut b = AngleTracker::default();
+        b.update(1);
+        b.update(0); // alinea (+1) y retrocede 2
+        assert_eq!(b.degrees(), -360.0 / 4096.0);
+    }
+
+    #[test]
+    fn angle_full_turn_wraps() {
+        let mut a = AngleTracker::default();
+        a.update(0);
+        for i in 1..=4096 {
+            a.update(i % 8);
+        }
+        assert_eq!(a.degrees(), 360.0);
     }
 }

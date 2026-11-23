@@ -9,7 +9,7 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Color,
     widgets::{
         Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph,
@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     app::{App, AppError},
-    motor::{CurrentMa, MotorState},
+    motor::CurrentMa,
 };
 
 pub struct Tui {
@@ -62,15 +62,15 @@ impl Tui {
                 Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)])
                     .areas(right);
 
-            Self::draw_left(frame, left, app.state());
+            Self::draw_left(frame, left, app);
             Self::draw_top_right(frame, top_right, app.current_history());
-            Self::draw_bottom_right(frame, bottom_right, app.state());
+            Self::draw_bottom_right(frame, bottom_right, app);
         })?;
         Ok(())
     }
 
     /// Region 1: circle with 8 sticks outside + center ball with a stick.
-    fn draw_left(frame: &mut Frame, area: Rect, state: &MotorState) {
+    fn draw_left(frame: &mut Frame, area: Rect, app: &App) {
         let block = Block::default().title("Practica_6").borders(Borders::ALL);
         let inner = block.inner(area);
 
@@ -79,8 +79,8 @@ impl Tui {
         let h = inner.height as f64 * 4.0;
         let r = w.min(h) / 2.0 * 0.6;
 
-        let current_step = state.current_step().unwrap_or(0);
-        let angle = (TAU * current_step as f64) / 8.0;
+        let current_degrees = app.angle_degrees();
+        let angle = current_degrees.to_radians();
 
         let canvas = Canvas::default()
             .block(block)
@@ -106,23 +106,25 @@ impl Tui {
                     });
                 }
 
-                // Center ball + stick (pointing up; swap the angle for motor state later)
+                let ball_r = r * 0.12;
+                let needle_length = r * 0.8;
+                let (dx, dy) = (
+                    (angle + FRAC_PI_2 as f64).cos(),
+                    (angle + FRAC_PI_2 as f64).sin(),
+                );
+
                 ctx.draw(&Circle {
                     x: 0.0,
                     y: 0.0,
-                    radius: r * 0.12,
+                    radius: ball_r,
                     color: Color::Yellow,
                 });
 
-                let needle_length = r * 0.8;
-                let x = needle_length * (angle + FRAC_PI_2 as f64).cos();
-                let y = needle_length * (angle + FRAC_PI_2 as f64).sin();
-
                 ctx.draw(&Line {
-                    x1: 0.0,
-                    y1: r * 0.12,
-                    x2: x,
-                    y2: y,
+                    x1: ball_r * dx,
+                    y1: ball_r * dy,
+                    x2: needle_length * dx,
+                    y2: needle_length * dy,
                     color: Color::Yellow,
                 });
             });
@@ -171,8 +173,37 @@ impl Tui {
     }
 
     /// Region 3: bottom right.
-    fn draw_bottom_right(frame: &mut Frame, area: Rect, _state: &MotorState) {
-        let block = Block::default().title("Region 3").borders(Borders::ALL);
-        frame.render_widget(block, area);
+    fn draw_bottom_right(frame: &mut Frame, area: Rect, app: &App) {
+        let block = Block::default().title("Info").borders(Borders::ALL);
+        frame.render_widget(&block, area);
+
+        let current_degrees = app.angle_degrees();
+
+        let paragraph =
+            Paragraph::new(format!("Ángulo: {:.2}°", current_degrees)).alignment(Alignment::Center);
+        frame.render_widget(paragraph, area);
+
+        let inner = block.inner(area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+        let mut paragraphs: Vec<Paragraph> = Vec::new();
+        paragraphs.extend([
+            Paragraph::new("A/B -> Simple Step"),
+            Paragraph::new("C/D -> Half Step"),
+            Paragraph::new("E/F -> Double Step"),
+            Paragraph::new("Q -> Exit"),
+        ]);
+
+        for (item, chunk) in paragraphs.into_iter().zip(chunks.iter()) {
+            frame.render_widget(item, *chunk);
+        }
     }
 }

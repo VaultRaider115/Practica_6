@@ -195,18 +195,15 @@ mod test {
     }
 
     #[test]
-    fn status_error() {
+    fn status_defaults_to_stopped() {
         let state = MotorState::new();
-        assert_eq!(state.status().unwrap_err(), MotorError::MotorStatusUnknown);
+        assert!(matches!(state.status(), Ok(MotorStatus::Stopped)));
     }
 
     #[test]
-    fn current_step_error() {
+    fn current_step_defaults_to_zero() {
         let state = MotorState::new();
-        assert_eq!(
-            state.current_step().unwrap_err(),
-            MotorError::MotorCurrentStepUnknown
-        );
+        assert_eq!(state.current_step().unwrap(), 0);
     }
 
     #[test]
